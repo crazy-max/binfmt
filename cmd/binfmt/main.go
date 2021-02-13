@@ -133,6 +133,20 @@ func parseArch(in string) (out []string) {
 	return
 }
 
+func parsePrefix(in string) (out []string) {
+	if in == "" {
+		return
+	}
+	fis, err := filepath.Glob(filepath.Join(mount, in) + "*")
+	if err != nil {
+		return
+	}
+	for _, fi := range fis {
+		out = append(out, filepath.Base(fi))
+	}
+	return
+}
+
 func main() {
 	flag.Parse()
 
@@ -140,6 +154,7 @@ func main() {
 		log.Printf("error: %+v", err)
 	}
 }
+
 func run() error {
 	if _, err := os.Stat(filepath.Join(mount, "status")); err != nil {
 		if err := syscall.Mount("binfmt_misc", mount, "binfmt_misc", 0, ""); err != nil {
@@ -148,7 +163,14 @@ func run() error {
 		defer syscall.Unmount(mount, 0)
 	}
 
-	for _, name := range parseArch(toUninstall) {
+	var uninstallArchs []string
+	if strings.HasSuffix(toUninstall, "-") {
+		uninstallArchs = parsePrefix(toUninstall)
+	} else {
+		uninstallArchs = parseArch(toUninstall)
+	}
+
+	for _, name := range uninstallArchs {
 		if name == "arm64" {
 			name = "aarch64"
 		}
