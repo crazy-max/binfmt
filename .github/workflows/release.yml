@@ -1,0 +1,66 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      qemu_version:
+        description: 'QEMU version'
+        required: true
+        default: 'v5.2.0' # Should be the same as defined in the Dockerfile
+      release:
+        description: 'Release number'
+        required: true
+        default: '0'
+      dry-run:
+        description: 'Dry run'
+        required: false
+        default: 'true'
+
+env:
+  REPO_SLUG: tonistiigi/binfmt
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - mainline-all
+          - buildkit-all
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v2
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+        with:
+          image: ${{ env.REPO_SLUG }}:master
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      -
+        name: Create Release
+        uses: actions/create-release@v1
+        if: github.event.inputs.dry-run != 'true'
+        with:
+          tag_name: ${{ github.event.inputs.qemu_version }}-${{ github.event.inputs.release }}
+          release_name: ${{ github.event.inputs.qemu_version }}-${{ github.event.inputs.release }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      -
+        name: Login to DockerHub
+        uses: docker/login-action@v1
+        if: github.event.inputs.dry-run != 'true'
+        with:
+          username: ${{ secrets.DOCKERIO_USERNAME }}
+          password: ${{ secrets.DOCKERIO_PASSWORD }}
+      -
+        uses: docker/bake-action@v1
+        with:
+          targets: ${{ github.event.inputs.target }}
+          push: ${{ github.event.inputs.dry-run != 'true' }}
+        env:
+          REPO: ${{ env.REPO_SLUG }}
+          TAG: ${{ github.event.inputs.qemu_version }}-${{ github.event.inputs.release }}
