@@ -93,14 +93,14 @@ jobs:
           targets: ${{ github.event.inputs.target }}
           push: false
           set: |
-            *.cache-from=${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}${{ github.event.inputs.qemu_version }},${{ env.REPO_SLUG }}:master
+            *.cache-from=${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}${{ github.event.inputs.qemu_version }},${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}master
         env:
           REPO: ${{ env.REPO_SLUG }}
           QEMU_REPO: ${{ steps.prep.outputs.repo }}
           QEMU_VERSION: ${{ steps.prep.outputs.ref }}
       -
         name: BuildKit archives
-        if: matrix.target == 'buildkit'
+        if: github.event.inputs.target == 'buildkit'
         uses: docker/bake-action@v1
         with:
           files: |
@@ -108,7 +108,7 @@ jobs:
             ${{ steps.meta.outputs.bake-file }}
           targets: buildkit-archive
           set: |
-            *.cache-from=${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}${{ github.event.inputs.qemu_version }},${{ env.REPO_SLUG }}:master
+            *.cache-from=${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}${{ github.event.inputs.qemu_version }},${{ env.REPO_SLUG }}:${{ steps.prep.outputs.tag_prefix }}master
         env:
           REPO: ${{ env.REPO_SLUG }}
           QEMU_REPO: ${{ steps.prep.outputs.repo }}
