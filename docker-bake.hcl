@@ -60,8 +60,8 @@ target "mainline-all" {
 target "buildkit" {
   inherits = ["meta-helper"]
   args = {
-    QEMU_REPO = trimspace(getdef("${QEMU_REPO}", "https://github.com/tonistiigi/qemu"))
-    QEMU_VERSION = trimspace(getdef("${QEMU_VERSION}", "be25039802ac0d9ead77960a8c14c1ecdb75ee34"))
+    QEMU_REPO = trimspace(getdef("${QEMU_REPO}", "https://github.com/qemu/qemu"))
+    QEMU_VERSION = trimspace(getdef("${QEMU_VERSION}", "v6.0.0"))
     BINARY_PREFIX = "buildkit-"
   }
   cache-to = ["type=inline"]
@@ -71,6 +71,18 @@ target "buildkit" {
 
 target "buildkit-all" {
   inherits = ["buildkit", "all-arch"]
+}
+
+target "buildkit-archive" {
+  inherits = ["buildkit"]
+  target = "buildkit-archive"
+  output = ["./bin"]
+}
+
+target "buildkit-archive-all" {
+  inherits = ["buildkit-all"]
+  target = "buildkit-archive"
+  output = ["./bin"]
 }
 
 target "buildkit-test" {

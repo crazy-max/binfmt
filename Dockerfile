@@ -10,12 +10,19 @@ ARG QEMU_REPO
 WORKDIR /src
 RUN git clone $QEMU_REPO && \
   cd qemu && \
-  git checkout $QEMU_VERSION && \
-  scripts/git-submodule.sh update \
+  git checkout $QEMU_VERSION
+
+WORKDIR /src/qemu
+COPY patchs /tmp
+ARG BINARY_PREFIX
+RUN if [ -n "$BINARY_PREFIX" ]; then patch --verbose -p1 < /tmp/shebang-fix.patch; fi
+
+RUN scripts/git-submodule.sh update \
   ui/keycodemapdb \
   tests/fp/berkeley-testfloat-3 \
   tests/fp/berkeley-softfloat-3 \
   dtc slirp
+WORKDIR /src
 
 FROM --platform=$BUILDPLATFORM debian:buster AS qemu
 
@@ -82,7 +89,14 @@ RUN --mount=target=.,from=src,src=/src/qemu,rw --mount=target=./install-scripts,
   make install
 
 ARG BINARY_PREFIX
-RUN cd /usr/bin; [ -z "$BINARY_PREFIX" ] || for f in $(ls qemu-*); do ln -s $f $BINARY_PREFIX$f; done
+RUN cd /usr/bin &&  mkdir -p /buildkit; \
+  if [ -n "$BINARY_PREFIX" ]; then \
+    for f in $(ls qemu-*); do \
+      ln -s ${f} ${BINARY_PREFIX}${f}; \
+    done; \
+    mkdir -p /out; \
+    tar czvfh "/buildkit/${BINARY_PREFIX}qemu_${QEMU_VERSION}_$(echo $TARGETPLATFORM | sed 's/\//-/g').tar.gz" ./${BINARY_PREFIX}qemu*; \
+  fi
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:golang@sha256:6f7d999551dd471b58f70716754290495690efa8421e0a1fcf18eb11d0c0a537 AS xgo
 
@@ -101,6 +115,9 @@ RUN --mount=target=. \
 FROM scratch AS binaries
 ARG BINARY_PREFIX
 COPY --from=build usr/bin/${BINARY_PREFIX}qemu-* /
+
+FROM scratch AS buildkit-archive
+COPY --from=build /buildkit/* /
 
 FROM --platform=$BUILDPLATFORM tonistiigi/bats-assert AS assert
 
