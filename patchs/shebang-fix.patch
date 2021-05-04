@@ -1,0 +1,371 @@
+diff --git a/include/qemu/path.h b/include/qemu/path.h
+index c6292a9709..a81fb51e1f 100644
+--- a/include/qemu/path.h
++++ b/include/qemu/path.h
+@@ -3,5 +3,6 @@
+ 
+ void init_paths(const char *prefix);
+ const char *path(const char *pathname);
++const char *prepend_workdir_if_relative(const char *path);
+ 
+ #endif
+diff --git a/linux-user/elfload.c b/linux-user/elfload.c
+index 0b02a92602..b71a8a8d7c 100644
+--- a/linux-user/elfload.c
++++ b/linux-user/elfload.c
+@@ -3064,10 +3064,10 @@ uint32_t get_elf_eflags(int fd)
+         return 0;
+     }
+     ret = read(fd, &ehdr, sizeof(ehdr));
++    offset = lseek(fd, offset, SEEK_SET); /* reset seek regardless of error */
+     if (ret < sizeof(ehdr)) {
+         return 0;
+     }
+-    offset = lseek(fd, offset, SEEK_SET);
+     if (offset == (off_t) -1) {
+         return 0;
+     }
+diff --git a/linux-user/linuxload.c b/linux-user/linuxload.c
+index a27e1d0d8b..746d953760 100644
+--- a/linux-user/linuxload.c
++++ b/linux-user/linuxload.c
+@@ -128,7 +128,7 @@ int loader_exec(int fdexec, const char *filename, char **argv, char **envp,
+              struct target_pt_regs * regs, struct image_info *infop,
+              struct linux_binprm *bprm)
+ {
+-    int retval;
++    int retval, depth;
+ 
+     bprm->fd = fdexec;
+     bprm->filename = (char *)filename;
+@@ -137,24 +137,33 @@ int loader_exec(int fdexec, const char *filename, char **argv, char **envp,
+     bprm->envc = count(envp);
+     bprm->envp = envp;
+ 
+-    retval = prepare_binprm(bprm);
+-
+-    if(retval>=0) {
+-        if (bprm->buf[0] == 0x7f
+-                && bprm->buf[1] == 'E'
+-                && bprm->buf[2] == 'L'
+-                && bprm->buf[3] == 'F') {
+-            retval = load_elf_binary(bprm, infop);
++    for (depth = 0; ; depth++) {
++        if (depth > 5) {
++            return -ELOOP;
++        }
++        retval = prepare_binprm(bprm);
++        if(retval>=0) {
++            if (bprm->buf[0] == 0x7f
++                    && bprm->buf[1] == 'E'
++                    && bprm->buf[2] == 'L'
++                    && bprm->buf[3] == 'F') {
++                retval = load_elf_binary(bprm, infop);
+ #if defined(TARGET_HAS_BFLT)
+-        } else if (bprm->buf[0] == 'b'
+-                && bprm->buf[1] == 'F'
+-                && bprm->buf[2] == 'L'
+-                && bprm->buf[3] == 'T') {
+-            retval = load_flt_binary(bprm, infop);
++            } else if (bprm->buf[0] == 'b'
++                    && bprm->buf[1] == 'F'
++                    && bprm->buf[2] == 'L'
++                    && bprm->buf[3] == 'T') {
++                retval = load_flt_binary(bprm, infop);
+ #endif
+-        } else {
+-            return -ENOEXEC;
++            } else if (bprm->buf[0] == '#'
++                    && bprm->buf[1] == '!') {
++                retval = load_script(bprm);
++                if (retval >= 0) continue;
++            } else {
++                return -ENOEXEC;
++            }
+         }
++        break;
+     }
+ 
+     if(retval>=0) {
+@@ -165,3 +174,101 @@ int loader_exec(int fdexec, const char *filename, char **argv, char **envp,
+ 
+     return(retval);
+ }
++
++static inline bool spacetab(char c) { return c == ' ' || c == '\t'; }
++static inline const char *next_non_spacetab(const char *first, const char *last)
++{
++    for (; first <= last; first++)
++        if (!spacetab(*first))
++            return first;
++    return NULL;
++}
++static inline const char *next_terminator(const char *first, const char *last)
++{
++    for (; first <= last; first++)
++        if (spacetab(*first) || !*first)
++            return first;
++    return NULL;
++}
++
++/*
++ * Reads the interpreter (shebang #!) line and modifies bprm object accordingly
++ * This is a modified version of Linux's load_script function.
++*/
++int load_script(struct linux_binprm *bprm)
++{
++    const char *i_name, *i_sep, *i_arg, *i_end, *buf_end;
++    int execfd, i, argc_delta;
++
++    buf_end = bprm->buf + sizeof(bprm->buf) - 1;
++    i_end = (const char*)memchr(bprm->buf, '\n', sizeof(bprm->buf));
++    if (!i_end) {
++        i_end = next_non_spacetab(bprm->buf + 2, buf_end);
++        if (!i_end) {
++            perror("script_prepare_binprm: no interpreter name found");
++            return -ENOEXEC; /* Entire buf is spaces/tabs */
++        }
++        /*
++         * If there is no later space/tab/NUL we must assume the
++         * interpreter path is truncated.
++         */
++        if (!next_terminator(i_end, buf_end)) {
++            perror("script_prepare_binprm: truncated interpreter path");
++            return -ENOEXEC;
++        }
++        i_end = buf_end;
++    }
++    /* Trim any trailing spaces/tabs from i_end */
++    while (spacetab(i_end[-1]))
++        i_end--;
++    *((char *)i_end) = '\0';
++    /* Skip over leading spaces/tabs */
++    i_name = next_non_spacetab(bprm->buf+2, i_end);
++    if (!i_name || (i_name == i_end)) {
++        perror("script_prepare_binprm: no interpreter name found");
++        return -ENOEXEC; /* No interpreter name found */
++    }
++
++    /* Is there an optional argument? */
++    i_arg = NULL;
++    i_sep = next_terminator(i_name, i_end);
++    if (i_sep && (*i_sep != '\0')) {
++        i_arg = next_non_spacetab(i_sep, i_end);
++        *((char *)i_sep) = '\0';
++    }
++
++    /*
++     * OK, we've parsed out the interpreter name and
++     * (optional) argument.
++     * Splice in (1) the interpreter's name for argv[0]
++     *           (2) (optional) argument to interpreter
++     *           (3) filename of shell script (replace argv[0])
++     *           (4) user arguments (argv[1:])
++     */
++
++    bprm->argv[0] = bprm->filename;
++
++    execfd = open(i_name, O_RDONLY);
++    if (execfd < 0) {
++        perror("script_prepare_binprm: could not open script");
++        return -ENOEXEC; /* Could not open interpreter */
++    }
++
++    argc_delta = 1 /* extra filename */ + (i_arg ? 1 : 0);
++    bprm->argc += argc_delta;
++    bprm->argv = realloc(bprm->argv, sizeof(char*) * (bprm->argc + 1));
++
++    /* shift argv by argc_delta */
++    for (i = bprm->argc; i >= argc_delta; i--)
++        bprm->argv[i] = bprm->argv[i-argc_delta];
++
++    bprm->argv[0] = (char *)strdup(i_name);
++    if (i_arg)
++        bprm->argv[1] = (char *)strdup(i_arg);
++
++    bprm->fd = execfd; /* not closing fd as it is needed for the duration of the program */
++    bprm->filename = (char *)strdup(i_name); /* replace filename with script interpreter */
++    /* envc and envp are kept unchanged */
++
++    return 0;
++}
+diff --git a/linux-user/main.c b/linux-user/main.c
+index 24d1eb73ad..2fa31803c1 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -543,6 +543,45 @@ static void usage(int exitcode)
+     exit(exitcode);
+ }
+ 
++/*
++ * path_lookup searches for an executable filename in the directories named by the PATH environment variable.
++ * Returns a copy of filename if it is an absolute path or could not find a match.
++ * Caller is responsible to free returned string.
++ * Adapted from musl's execvp implementation.
++ */
++static char *path_lookup(char *filename) {
++    const char *p, *z, *path = getenv("PATH");
++    size_t l, k;
++    struct stat buf;
++
++    /* if PATH is not set or filename is absolute path return filename */
++    if (!path || !filename || filename[0] == '/')
++        return strndup(filename, NAME_MAX+1);
++
++    k = strnlen(filename, NAME_MAX+1);
++    if (k > NAME_MAX) {
++        errno = ENAMETOOLONG;
++        return NULL;
++    }
++    l = strnlen(path, PATH_MAX-1)+1;
++
++    for (p = path; ; p = z) {
++        char *b = calloc(l+k+1, sizeof(char));
++        z = strchrnul(p, ':');
++        if (z-p >= l) {
++            if (!*z++) break;
++            continue;
++        }
++        memcpy(b, p, z-p);
++        b[z-p] = '/';
++        memcpy(b+(z-p)+(z>p), filename, k+1);
++        if (!stat(b, &buf) && !(buf.st_mode & S_IFDIR) && (buf.st_mode & (S_IXUSR|S_IXGRP|S_IXOTH)))
++            return b;
++        if (!*z++) break;
++    }
++    return strndup(filename, NAME_MAX+1);
++}
++
+ static int parse_args(int argc, char **argv)
+ {
+     const char *r;
+@@ -608,7 +647,11 @@ static int parse_args(int argc, char **argv)
+         exit(EXIT_FAILURE);
+     }
+ 
+-    exec_path = argv[optind];
++    /* not freeing exec_path as it is needed for the lifetime of the process */
++    if (!(exec_path = path_lookup(argv[optind]))) {
++        (void) fprintf(stderr, "qemu: could not find user program %s: %s\n", exec_path, strerror(errno));
++        exit(EXIT_FAILURE);
++    }
+ 
+     return optind;
+ }
+diff --git a/linux-user/qemu.h b/linux-user/qemu.h
+index 534753ca12..70359a1bad 100644
+--- a/linux-user/qemu.h
++++ b/linux-user/qemu.h
+@@ -225,6 +225,7 @@ int info_is_fdpic(struct image_info *info);
+ uint32_t get_elf_eflags(int fd);
+ int load_elf_binary(struct linux_binprm *bprm, struct image_info *info);
+ int load_flt_binary(struct linux_binprm *bprm, struct image_info *info);
++int load_script(struct linux_binprm *bprm);
+ 
+ abi_long memcpy_to_target(abi_ulong dest, const void *src,
+                           unsigned long len);
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index 27adee908e..1d2fee990c 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -8408,10 +8408,42 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
+                 envc++;
+             }
+ 
+-            argp = g_new0(char *, argc + 1);
++            argp = g_new0(char *, argc + 4);
+             envp = g_new0(char *, envc + 1);
+ 
+-            for (gp = guest_argp, q = argp; gp;
++            if (!(p = lock_user_string(arg1)))
++                goto execve_efault;
++
++            /* if pathname is /proc/self/exe then retrieve the path passed to qemu via command line */
++            if (is_proc_myself(p, "exe")) {
++                CPUState *cpu = env_cpu((CPUArchState *)cpu_env);
++                TaskState *ts = cpu->opaque;
++                p = ts->bprm->filename;
++            }
++
++            /* retrieve guest argv0 */
++            if (get_user_ual(addr, guest_argp))
++                goto execve_efault;
++
++            /*
++             * From the guest, the call
++             * 		execve(pathname, [argv0, argv1], envp)
++             * on the host, becomes:
++             * 		execve("/proc/self/exe", [qemu_progname, "-0", argv0, pathname, argv1], envp)
++             * where qemu_progname is the error message prefix for qemu.
++             * Note: if pathname is relative, it will be prepended with the current working directory.
++            */
++            argp[0] = (char*)error_get_progname();
++            argp[1] = (char*)"-0";
++            argp[2] = (char*)lock_user_string(addr);
++            argp[3] = (char*)prepend_workdir_if_relative(p);
++            if (!argp[3]) {
++                ret = -host_to_target_errno(errno);
++                goto execve_end;
++            }
++
++            /* copy guest argv1 onwards to host argv4 onwards */
++            for (gp = guest_argp + 1*sizeof(abi_ulong), q = argp + 4; gp;
+                   gp += sizeof(abi_ulong), q++) {
+                 if (get_user_ual(addr, gp))
+                     goto execve_efault;
+@@ -8435,8 +8467,6 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
+             }
+             *q = NULL;
+ 
+-            if (!(p = lock_user_string(arg1)))
+-                goto execve_efault;
+             /* Although execve() is not an interruptible syscall it is
+              * a special case where we must use the safe_syscall wrapper:
+              * if we allow a signal to happen before we make the host
+@@ -8447,7 +8477,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
+              * before the execve completes and makes it the other
+              * program's problem.
+              */
+-            ret = get_errno(safe_execve(p, argp, envp));
++            ret = get_errno(safe_execve("/proc/self/exe", argp, envp));
+             unlock_user(p, arg1, 0);
+ 
+             goto execve_end;
+diff --git a/util/path.c b/util/path.c
+index 8e174eb436..f7907b8238 100644
+--- a/util/path.c
++++ b/util/path.c
+@@ -68,3 +68,33 @@ const char *path(const char *name)
+     qemu_mutex_unlock(&lock);
+     return ret;
+ }
++
++/* Prepends working directory if path is relative.
++ * If path is absolute, it is returned as-is without any allocation.
++ * Otherwise, caller is responsible to free returned path.
++ * Returns NULL and sets errno upon error.
++ * Note: realpath is not called to let the kernel do the rest of the resolution.
++ */
++const char *prepend_workdir_if_relative(const char *path)
++{
++    char buf[PATH_MAX];
++    char *p;
++    int i, j, k;
++
++    if (!path || path[0] == '/') return path;
++
++    if (!getcwd(buf, PATH_MAX)) return NULL;
++    i = strlen(buf);
++    j = strlen(path);
++    k = i + 1 + j + 1; /* workdir + '/' + path + '\0' */
++    if (i + j > PATH_MAX) {
++        errno = ERANGE;
++        return NULL;
++    }
++    if (!(p = malloc(k * sizeof(char*)))) return NULL;
++
++    if (!strncat(p, buf, i)) return NULL;
++    if (!strncat(p, "/", 1)) return NULL;
++    if (!strncat(p, path, j)) return NULL;
++    return p;
++}
