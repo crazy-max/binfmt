@@ -83,7 +83,7 @@ target "buildkit-test" {
 target "archive" {
   inherits = ["mainline"]
   target = "archive"
-  outputs = ["./bin"]
+  output = ["./bin"]
 }
 
 target "archive-all" {
