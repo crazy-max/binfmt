@@ -8,7 +8,7 @@ variable "QEMU_VERSION" {
   default = "v8.0.2"
 }
 variable "QEMU_PATCHES" {
-  default = "cpu-max-arm"
+  default = "cpu-max-arm,subreaper-prctl"
 }
 
 // Special target: https://github.com/docker/metadata-action#bake-definition
