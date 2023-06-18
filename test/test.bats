@@ -83,7 +83,7 @@ execdirect() {
 @test "shebang-direct" {
   execdirect ./shebang.sh foo bar1
   assert_success
-  assert_output "./printargs ./shebang.sh foo bar1"
+  assert_output "./printargs /work/shebang.sh foo bar1"
 }
 
 @test "relative-exec" {
@@ -111,23 +111,15 @@ execdirect() {
 }
 
 @test "shell-command-relative" {
-  if [ -n "$BINFMT_EMULATOR" ]; then
-    skip "prepend_workdir_if_relative is altering the behaviour for args when run under emulation"
-  fi
-
   exec0 sh sh -c './shebang-path.sh foo bar1 bar2'
   assert_success
-  assert_output "./printargs ./shebang-path.sh foo bar1 bar2"
+  assert_output "./printargs /work/shebang-path.sh foo bar1 bar2"
 }
 
 @test "shell-command-relative-direct" {
-  if [ -n "$BINFMT_EMULATOR" ]; then
-    skip "prepend_workdir_if_relative is altering the behaviour for args when run under emulation"
-  fi
-
   execdirect sh -c './shebang-path.sh foo bar1 bar2'
   assert_success
-  assert_output "./printargs ./shebang-path.sh foo bar1 bar2"
+  assert_output "./printargs /work/shebang-path.sh foo bar1 bar2"
 }
 
 @test "shell-command-relative-nested" {
